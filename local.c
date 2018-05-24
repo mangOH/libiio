@@ -1181,6 +1181,59 @@ static int read_device_name(struct iio_device *dev)
 		return 0;
 }
 
+/* Here are a few functions to do sorting for various internal iio structures.
+ * For more info, see the qsort(3) man page.
+ * The qsort arguments to these function are "pointers to pointers to char",
+ * but strcmp(3) arguments are "pointers to char", hence the required
+ * cast plus dereference
+ */
+
+/* qsort devices by ID */
+static int local_cmp_iio_device(const void *p1, const void *p2)
+{
+	struct iio_device *tmp1 = *(struct iio_device **)p1;
+	struct iio_device *tmp2 = *(struct iio_device **)p2;
+
+	return strcmp(tmp1->id, tmp2->id);
+}
+
+/* qsort device attributes by name */
+static int local_cmp_iio_device_attr(const void *p1, const void *p2)
+{
+	const char *tmp1 = *(const char **)p1;
+	const char *tmp2 = *(const char **)p2;
+
+	return strcmp(tmp1, tmp2);
+}
+
+/* qsort channels by outputs, then ID */
+static int local_cmp_iio_channel(const void *p1, const void *p2)
+{
+	struct iio_channel *tmp1 = *(struct iio_channel **)p1;
+	struct iio_channel *tmp2 = *(struct iio_channel **)p2;
+
+	return (strcmp(tmp1->id, tmp2->id) > 0) ||
+		(strcmp(tmp1->id, tmp2->id) == 0 && ! tmp1->is_output);
+}
+
+/* qsort channel attributes by name */
+static int local_cmp_iio_channel_attr(const void *p1, const void *p2)
+{
+	struct iio_channel_attr *tmp1 = (struct iio_channel_attr *)p1;
+	struct iio_channel_attr *tmp2 = (struct iio_channel_attr *)p2;
+
+	return strcmp(tmp1->name, tmp2->name);
+}
+
+/* qsort buffer attributes by name */
+static int local_cmp_iio_buffer_attr(const void *p1, const void *p2)
+{
+	const char *tmp1 = *(const char **)p1;
+	const char *tmp2 = *(const char **)p2;
+
+	return strcmp(tmp1, tmp2);
+}
+
 static int add_attr_to_device(struct iio_device *dev, const char *attr)
 {
 	char **attrs, *name;
@@ -1206,6 +1259,7 @@ static int add_attr_to_device(struct iio_device *dev, const char *attr)
 	attrs[dev->nb_attrs++] = name;
 	dev->attrs = attrs;
 	DEBUG("Added attr \'%s\' to device \'%s\'\n", attr, dev->id);
+
 	return 0;
 }
 
@@ -1315,6 +1369,7 @@ static int add_attr_to_channel(struct iio_channel *chn,
 {
 	struct iio_channel_attr *attrs;
 	char *fn, *name = get_short_attr_name(chn, attr);
+
 	if (!name)
 		return -ENOMEM;
 
@@ -1340,6 +1395,7 @@ static int add_attr_to_channel(struct iio_channel *chn,
 	attrs[chn->nb_attrs++].name = name;
 	chn->attrs = attrs;
 	DEBUG("Added attr \'%s\' to channel \'%s\'\n", name, chn->id);
+
 	return 0;
 
 err_free_fn:
@@ -1359,7 +1415,9 @@ static int add_channel_to_device(struct iio_device *dev,
 
 	channels[dev->nb_channels++] = chn;
 	dev->channels = channels;
-	DEBUG("Added channel \'%s\' to device \'%s\'\n", chn->id, dev->id);
+	DEBUG("Added %s channel \'%s\' to device \'%s\'\n",
+		chn->is_output ? "output" : "input", chn->id, dev->id);
+
 	return 0;
 }
 
@@ -1374,6 +1432,7 @@ static int add_device_to_context(struct iio_context *ctx,
 	devices[ctx->nb_devices++] = dev;
 	ctx->devices = devices;
 	DEBUG("Added device \'%s\' to context \'%s\'\n", dev->id, ctx->name);
+
 	return 0;
 }
 
@@ -1599,6 +1658,7 @@ static int add_buffer_attr(void *d, const char *path)
 	attrs[dev->nb_buffer_attrs++] = attr;
 	dev->buffer_attrs = attrs;
 	DEBUG("Added buffer attr \'%s\' to device \'%s\'\n", attr, dev->id);
+
 	return 0;
 }
 
@@ -1708,6 +1768,9 @@ static int add_buffer_attributes(struct iio_device *dev, const char *devpath)
 		int ret = foreach_in_dir(dev, buf, false, add_buffer_attr);
 		if (ret < 0)
 			return ret;
+
+		qsort(dev->buffer_attrs, dev->nb_buffer_attrs, sizeof(char *),
+			local_cmp_iio_buffer_attr);
 	}
 
 	return 0;
@@ -1761,11 +1824,20 @@ static int create_device(void *d, const char *path)
 		free_protected_attrs(chn);
 		if (ret < 0)
 			goto err_free_scan_elements;
+
+		qsort(chn->attrs,  chn->nb_attrs, sizeof(struct iio_channel_attr),
+			local_cmp_iio_channel_attr);
 	}
 
 	ret = detect_and_move_global_attrs(dev);
 	if (ret < 0)
 		goto err_free_device;
+
+	qsort(dev->attrs,  dev->nb_attrs, sizeof(char *),
+		local_cmp_iio_device_attr);
+
+	qsort(dev->channels, dev->nb_channels, sizeof(struct iio_channel *),
+		local_cmp_iio_channel);
 
 	dev->words = (dev->nb_channels + 31) / 32;
 	if (dev->words) {
@@ -1989,6 +2061,9 @@ struct iio_context * local_create_context(void)
 	ret = foreach_in_dir(ctx, "/sys/bus/iio/devices", true, create_device);
 	if (ret < 0)
 		goto err_context_destroy;
+
+	qsort(ctx->devices, ctx->nb_devices, sizeof(struct iio_device *),
+		local_cmp_iio_device);
 
 	foreach_in_dir(ctx, "/sys/kernel/debug/iio", true, add_debug);
 
